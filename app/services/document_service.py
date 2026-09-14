@@ -24,7 +24,7 @@ class ConversionError(RuntimeError):
 
 
 def pdf_to_word(src_pdf: Path, dst_docx: Path) -> None:
-    """Convert PDF to Word preserving layout and all text/image blocks (PyMuPDF + python-docx)."""
+    """Convert PDF to Word preserving multi-column layout and embedded images (PyMuPDF + python-docx)."""
     try:
         import pymupdf as fitz
         import docx
@@ -39,16 +39,18 @@ def pdf_to_word(src_pdf: Path, dst_docx: Path) -> None:
         doc = fitz.open(str(src_pdf))
         word_doc = docx.Document()
 
+        # Sayfa kenar boşlukları
         for section in word_doc.sections:
-            section.top_margin = Inches(0.75)
-            section.bottom_margin = Inches(0.75)
-            section.left_margin = Inches(0.75)
-            section.right_margin = Inches(0.75)
+            section.top_margin = Inches(0.5)
+            section.bottom_margin = Inches(0.5)
+            section.left_margin = Inches(0.5)
+            section.right_margin = Inches(0.5)
 
         for page_index, page in enumerate(doc):
             if page_index > 0:
                 word_doc.add_page_break()
 
+            # 1. Görselleri Çıkart ve Ekle
             image_list = page.get_images(full=True)
             for img_index, img in enumerate(image_list):
                 xref = img[0]
@@ -67,66 +69,106 @@ def pdf_to_word(src_pdf: Path, dst_docx: Path) -> None:
                     if image_path.exists():
                         image_path.unlink(missing_ok=True)
 
+            # 2. Metin Bloklarını Al ve Akıllı Sütun Analizi Yap
             blocks = page.get_text("blocks")
-            text_blocks = [b for b in blocks if b[6] == 0]
+            text_blocks = [b for b in blocks if b[6] == 0 and b[4].strip()]
 
             if not text_blocks:
                 continue
 
             page_width = page.rect.width
-            split_x = page_width * 0.38
+            # LinkedIn formatı için sol sütun orta sınır eşiği (~%32)
+            split_x = page_width * 0.32
 
-            left_column_texts = []
-            right_column_texts = []
+            left_blocks = []
+            right_blocks = []
+            full_blocks = []
 
             for b in text_blocks:
                 x0, y0, x1, y1, text, _, _ = b
                 cleaned_text = text.strip()
                 if not cleaned_text:
                     continue
-                
-                if x0 < split_x:
-                    left_column_texts.append((y0, cleaned_text))
+
+                width = x1 - x0
+                center_x = (x0 + x1) / 2.0
+
+                # Sayfanın yarısından geniş bloklar tam genişlik kabul edilir
+                if width > page_width * 0.55:
+                    full_blocks.append((y0, cleaned_text))
+                # Blok merkez noktası sol taraftaysa sol sütuna ekle
+                elif center_x < split_x:
+                    left_blocks.append((y0, cleaned_text))
+                # Aksi takdirde sağ ana sütuna ekle
                 else:
-                    right_column_texts.append((y0, cleaned_text))
+                    right_blocks.append((y0, cleaned_text))
 
-            left_column_texts.sort(key=lambda x: x[0])
-            right_column_texts.sort(key=lambda x: x[0])
+            left_blocks.sort(key=lambda item: item[0])
+            right_blocks.sort(key=lambda item: item[0])
+            full_blocks.sort(key=lambda item: item[0])
 
-            table = word_doc.add_table(rows=1, cols=2)
-            table.alignment = WD_TABLE_ALIGNMENT.CENTER
-            table.autofit = False
+            # 3. İki Sütunlu Yapı (CV vb.) Var ise Tablo Oluştur
+            if left_blocks and right_blocks:
+                # Varsa üstteki tam genişlikli başlıkları ekle
+                for _, text in full_blocks:
+                    p = word_doc.add_paragraph()
+                    p.paragraph_format.space_after = Pt(4)
+                    p.paragraph_format.line_spacing = 1.15
+                    run = p.add_run(text)
+                    run.font.name = "Arial"
+                    run.font.size = Pt(10)
 
-            table.columns[0].width = Inches(2.3)
-            table.columns[1].width = Inches(4.2)
+                # Görünmez 2 sütunlu tablo
+                table = word_doc.add_table(rows=1, cols=2)
+                table.alignment = WD_TABLE_ALIGNMENT.CENTER
+                table.autofit = False
 
-            cell_left = table.cell(0, 0)
-            cell_right = table.cell(0, 1)
+                table.columns[0].width = Inches(2.3)
+                table.columns[1].width = Inches(4.7)
 
-            for cell in (cell_left, cell_right):
-                tcPr = cell._tc.get_or_add_tcPr()
-                tcBorders = docx.oxml.OxmlElement('w:tcBorders')
-                for border_name in ['top', 'left', 'bottom', 'right', 'insideH', 'insideV']:
-                    border = docx.oxml.OxmlElement(f'w:{border_name}')
-                    border.set(docx.oxml.ns.qn('w:val'), 'none')
-                    tcBorders.append(border)
-                tcPr.append(tcBorders)
+                cell_left = table.cell(0, 0)
+                cell_right = table.cell(0, 1)
 
-            for _, text in left_column_texts:
-                p = cell_left.add_paragraph()
-                p.paragraph_format.space_after = Pt(3)
-                p.paragraph_format.line_spacing = 1.15
-                run = p.add_run(text)
-                run.font.name = "Arial"
-                run.font.size = Pt(9)
+                # Tablo kenarlıklarını gizle
+                for cell in (cell_left, cell_right):
+                    tcPr = cell._tc.get_or_add_tcPr()
+                    tcBorders = docx.oxml.OxmlElement('w:tcBorders')
+                    for border_name in ['top', 'left', 'bottom', 'right', 'insideH', 'insideV']:
+                        border = docx.oxml.OxmlElement(f'w:{border_name}')
+                        border.set(docx.oxml.ns.qn('w:val'), 'none')
+                        tcBorders.append(border)
+                    tcPr.append(tcBorders)
 
-            for _, text in right_column_texts:
-                p = cell_right.add_paragraph()
-                p.paragraph_format.space_after = Pt(4)
-                p.paragraph_format.line_spacing = 1.15
-                run = p.add_run(text)
-                run.font.name = "Arial"
-                run.font.size = Pt(9.5)
+                # Sol sütun metinleri
+                for _, text in left_blocks:
+                    p = cell_left.add_paragraph()
+                    p.paragraph_format.space_after = Pt(3)
+                    p.paragraph_format.line_spacing = 1.15
+                    run = p.add_run(text)
+                    run.font.name = "Arial"
+                    run.font.size = Pt(9)
+
+                # Sağ sütun metinleri
+                for _, text in right_blocks:
+                    p = cell_right.add_paragraph()
+                    p.paragraph_format.space_after = Pt(4)
+                    p.paragraph_format.line_spacing = 1.15
+                    run = p.add_run(text)
+                    run.font.name = "Arial"
+                    run.font.size = Pt(9.5)
+
+            else:
+                # Tek sütunlu standart belge
+                all_blocks = left_blocks + right_blocks + full_blocks
+                all_blocks.sort(key=lambda item: item[0])
+
+                for _, text in all_blocks:
+                    p = word_doc.add_paragraph()
+                    p.paragraph_format.space_after = Pt(4)
+                    p.paragraph_format.line_spacing = 1.15
+                    run = p.add_run(text)
+                    run.font.name = "Arial"
+                    run.font.size = Pt(10)
 
         word_doc.save(str(dst_docx))
         doc.close()
