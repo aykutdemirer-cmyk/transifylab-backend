@@ -24,7 +24,7 @@ class ConversionError(RuntimeError):
 
 
 def pdf_to_word(src_pdf: Path, dst_docx: Path) -> None:
-    """Convert PDF to Word maintaining exact original visual layout using pdf2docx."""
+    """Convert PDF to Word maintaining visual layout and post-processing visual artifacts."""
     try:
         from pdf2docx import Converter
     except ImportError as exc:
@@ -38,11 +38,57 @@ def pdf_to_word(src_pdf: Path, dst_docx: Path) -> None:
             cv.convert(str(dst_docx), start=0, end=None)
         finally:
             cv.close()
+
+        # Görsel hataları, beyaz metinleri ve &amp; karakterlerini temizle
+        _post_process_docx(dst_docx)
+
     except Exception as exc:
         raise ConversionError(f"PDF to Word conversion failed: {exc}") from exc
 
     if not dst_docx.exists() or dst_docx.stat().st_size == 0:
         raise ConversionError("PDF to Word conversion produced no output.")
+
+
+def _post_process_docx(docx_path: Path) -> None:
+    """Fix white text, HTML entities (&amp;), and styling issues in the generated DOCX."""
+    try:
+        import docx
+        from docx.shared import RGBColor
+    except ImportError:
+        return
+
+    doc = docx.Document(str(docx_path))
+
+    def clean_run(run) -> None:
+        if run.text:
+            # HTML karakterlerini temizle
+            run.text = (
+                run.text.replace("&amp;", "&")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", '"')
+            )
+
+        # Beyaz veya görünmeyen açık renkli yazıları koyu renge çevir
+        if run.font.color and run.font.color.rgb:
+            r, g, b = run.font.color.rgb
+            if r > 200 and g > 200 and b > 200:
+                run.font.color.rgb = RGBColor(30, 30, 30)
+
+    # Paragrafları tara
+    for p in doc.paragraphs:
+        for r in p.runs:
+            clean_run(r)
+
+    # Tablo hücrelerini tara
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    for r in p.runs:
+                        clean_run(r)
+
+    doc.save(str(docx_path))
 
 
 def text_to_pdf(text: str, dst_pdf: Path, title: str | None = None) -> None:
