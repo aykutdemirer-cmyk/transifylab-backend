@@ -12,8 +12,8 @@ pydantic-settings>=2.7
 aiofiles>=24.1
 
 # --- Document conversion ---
-# PDF -> Word (keeps layout + tables). Pulls in PyMuPDF, numpy, opencv-headless.
-pdf2docx>=0.5.13
+# PDF -> Word (PyMuPDF for coordinate-based parsing + python-docx for grid construction)
+pymupdf>=1.24.0
 # Word/Text -> PDF
 python-docx>=1.1
 reportlab>=4.2
@@ -21,7 +21,7 @@ reportlab>=4.2
 # --- Speech-to-Text (heavy; NOT installed by default) ---
 # Uncomment the backend you want, or run e.g. `pip install faster-whisper`.
 # Both are imported lazily; /api/v1/health reports which are available.
-faster-whisper>=1.1       # local, offline (pulls in ctranslate2 + av/PyAV)
+faster-whisper>=1.1        # local, offline (pulls in ctranslate2 + av/PyAV)
 openai>=1.59              # OpenAI Whisper API
 # PyAV: needed to transcode .gsm/.amr/.3gp uploads to WAV. Comes bundled with
 # faster-whisper; install explicitly if you use only the OpenAI backend:
@@ -29,7 +29,7 @@ av>=11
 # Speaker diarization (offline, no torch / no HF token). Also needs two ONNX
 # models under backend/models/diarization/ (segmentation.onnx + embedding.onnx,
 # see README):
-#   sherpa-onnx>=1.13
+#    sherpa-onnx>=1.13
 
 # --- Tests ---
 pytest>=8.3
