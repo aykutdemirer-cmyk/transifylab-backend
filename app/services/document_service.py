@@ -1,8 +1,8 @@
 """Document conversion.
 
-Heavy/optional dependencies (``fitz`` / PyMuPDF, ``python-docx``, ``pdf2docx``) are
-imported inside the functions that need them so the API still boots when they are
-absent; a missing dependency surfaces as a 503 via :class:`FeatureUnavailableError`.
+Heavy/optional dependencies (``fitz`` / PyMuPDF, ``python-docx``) are imported inside
+the functions that need them so the API still boots when they are absent; a
+missing dependency surfaces as a 503 via :class:`FeatureUnavailableError`.
 """
 from __future__ import annotations
 
@@ -24,50 +24,12 @@ class ConversionError(RuntimeError):
 
 
 def pdf_to_word(src_pdf: Path, dst_docx: Path) -> None:
-    """Convert PDF to Word, preserving the original visual layout as closely as possible.
-
-    Uses ``pdf2docx``, which analyzes the PDF's page structure (columns, tables,
-    fonts, image positions) and reconstructs it in the .docx using text boxes /
-    tables / absolute positioning - instead of flattening everything into a single
-    column of plain paragraphs (which is what the old PyMuPDF-block-dump approach did).
-
-    Falls back to the legacy block-dump method if pdf2docx is not installed OR if
-    it fails outright on a given file (some PDFs with complex vector backgrounds /
-    shapes can confuse its layout analysis).
-    """
-    try:
-        from pdf2docx import Converter
-    except ImportError as exc:
-        raise FeatureUnavailableError(
-            "Required dependency (pdf2docx) is not installed. Run: pip install pdf2docx"
-        ) from exc
-
-    try:
-        cv = Converter(str(src_pdf))
-        try:
-            cv.convert(str(dst_docx), start=0, end=None)
-        finally:
-            cv.close()
-    except Exception as exc:
-        logger.warning("pdf2docx failed for %s (%s); falling back to legacy converter", src_pdf, exc)
-        _pdf_to_word_legacy_blocks(src_pdf, dst_docx)
-        return
-
-    if not dst_docx.exists() or dst_docx.stat().st_size == 0:
-        logger.warning("pdf2docx produced empty output for %s; falling back to legacy converter", src_pdf)
-        _pdf_to_word_legacy_blocks(src_pdf, dst_docx)
-
-
-def _pdf_to_word_legacy_blocks(src_pdf: Path, dst_docx: Path) -> None:
-    """Legacy fallback: dumps text blocks + images into a single-column Word doc.
-
-    Loses original layout (columns, fonts, absolute positions) but never fails
-    on unusual PDF structures, so it's kept as a safety net behind pdf2docx.
-    """
+    """Convert PDF to Word preserving layout and all text/image blocks (PyMuPDF + python-docx)."""
     try:
         import pymupdf as fitz
         import docx
         from docx.shared import Inches, Pt
+        from docx.enum.table import WD_TABLE_ALIGNMENT
     except ImportError as exc:
         raise FeatureUnavailableError(
             "Required dependencies (PyMuPDF / python-docx) are not installed. Run: pip install PyMuPDF python-docx"
@@ -93,7 +55,7 @@ def _pdf_to_word_legacy_blocks(src_pdf: Path, dst_docx: Path) -> None:
                 base_image = doc.extract_image(xref)
                 image_bytes = base_image["image"]
                 image_ext = base_image["ext"]
-
+                
                 image_path = src_pdf.parent / f"extracted_img_{page_index}_{img_index}.{image_ext}"
                 image_path.write_bytes(image_bytes)
 
@@ -111,22 +73,60 @@ def _pdf_to_word_legacy_blocks(src_pdf: Path, dst_docx: Path) -> None:
             if not text_blocks:
                 continue
 
-            formatted_blocks = []
+            page_width = page.rect.width
+            split_x = page_width * 0.38
+
+            left_column_texts = []
+            right_column_texts = []
+
             for b in text_blocks:
-                x0, y0, x1, y1, text, block_no, block_type = b
+                x0, y0, x1, y1, text, _, _ = b
                 cleaned_text = text.strip()
-                if cleaned_text:
-                    formatted_blocks.append((y0, x0, cleaned_text))
+                if not cleaned_text:
+                    continue
+                
+                if x0 < split_x:
+                    left_column_texts.append((y0, cleaned_text))
+                else:
+                    right_column_texts.append((y0, cleaned_text))
 
-            formatted_blocks.sort(key=lambda item: (item[0], item[1]))
+            left_column_texts.sort(key=lambda x: x[0])
+            right_column_texts.sort(key=lambda x: x[0])
 
-            for _, _, text in formatted_blocks:
-                p = word_doc.add_paragraph()
+            table = word_doc.add_table(rows=1, cols=2)
+            table.alignment = WD_TABLE_ALIGNMENT.CENTER
+            table.autofit = False
+
+            table.columns[0].width = Inches(2.3)
+            table.columns[1].width = Inches(4.2)
+
+            cell_left = table.cell(0, 0)
+            cell_right = table.cell(0, 1)
+
+            for cell in (cell_left, cell_right):
+                tcPr = cell._tc.get_or_add_tcPr()
+                tcBorders = docx.oxml.OxmlElement('w:tcBorders')
+                for border_name in ['top', 'left', 'bottom', 'right', 'insideH', 'insideV']:
+                    border = docx.oxml.OxmlElement(f'w:{border_name}')
+                    border.set(docx.oxml.ns.qn('w:val'), 'none')
+                    tcBorders.append(border)
+                tcPr.append(tcBorders)
+
+            for _, text in left_column_texts:
+                p = cell_left.add_paragraph()
+                p.paragraph_format.space_after = Pt(3)
+                p.paragraph_format.line_spacing = 1.15
+                run = p.add_run(text)
+                run.font.name = "Arial"
+                run.font.size = Pt(9)
+
+            for _, text in right_column_texts:
+                p = cell_right.add_paragraph()
                 p.paragraph_format.space_after = Pt(4)
                 p.paragraph_format.line_spacing = 1.15
                 run = p.add_run(text)
                 run.font.name = "Arial"
-                run.font.size = Pt(10)
+                run.font.size = Pt(9.5)
 
         word_doc.save(str(dst_docx))
         doc.close()
