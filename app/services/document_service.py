@@ -26,7 +26,7 @@ class ConversionError(RuntimeError):
 def pdf_to_word(src_pdf: Path, dst_docx: Path) -> None:
     """Convert PDF to Word preserving multi-column layout and embedded images (PyMuPDF + python-docx)."""
     try:
-        import fitz  # PyMuPDF
+        import pymupdf as fitz
         import docx
         from docx.shared import Inches, Pt, RGBColor
         from docx.enum.text import WD_ALIGN_PARAGRAPH
