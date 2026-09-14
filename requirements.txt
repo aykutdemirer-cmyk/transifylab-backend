@@ -29,7 +29,7 @@ av>=11
 # Speaker diarization (offline, no torch / no HF token). Also needs two ONNX
 # models under backend/models/diarization/ (segmentation.onnx + embedding.onnx,
 # see README):
-#    sherpa-onnx>=1.13
+#   sherpa-onnx>=1.13
 
 # --- Tests ---
 pytest>=8.3
