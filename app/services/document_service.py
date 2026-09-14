@@ -79,9 +79,9 @@ def pdf_to_word(src_pdf: Path, dst_docx: Path) -> None:
             if not text_blocks:
                 continue
 
-            # Sayfa genişliğine göre sol ve sağ sütunları ayırmak için eşik (ortalama X koordinatı)
+            # Sayfa genişliğine göre sol ve sağ sütun sınırını ayarla (LinkedIn için sol taraf daha dardır)
             page_width = page.rect.width
-            mid_x = page_width / 2
+            split_x = page_width * 0.32  # İlk %32'lik kısım sol sütun (iletişim, yetenekler)
 
             left_column_texts = []
             right_column_texts = []
@@ -92,36 +92,45 @@ def pdf_to_word(src_pdf: Path, dst_docx: Path) -> None:
                 if not cleaned_text:
                     continue
                 
-                # Eğer blok sayfanın sol yarısındaysa sol sütuna, sağ yarısındaysa sağ sütuna ata
-                if x0 < mid_x - 20:  # Küçük bir tolerans payı
+                if x0 < split_x:
                     left_column_texts.append((y0, cleaned_text))
                 else:
                     right_column_texts.append((y0, cleaned_text))
 
-            # Dikey sıraya (y0 koordinatına) göre yukarıdan aşağıya sırala
+            # Dikey sıraya göre sırala
             left_column_texts.sort(key=lambda x: x[0])
             right_column_texts.sort(key=lambda x: x[0])
 
-            # 3. İki Sütunlu Yapıyı Korumak İçin Görünmez Tablo (Grid) Oluştur
+            # 3. İki Sütunlu Yapı İçin Tablo Oluştur ve Kenar Çizgilerini Kaldır
             table = word_doc.add_table(rows=1, cols=2)
             table.alignment = WD_TABLE_ALIGNMENT.CENTER
             table.autofit = False
 
-            # Sütun genişliklerini ayarla (Sol: 2.2 inç, Sağ: 4.3 inç)
-            table.columns[0].width = Inches(2.2)
-            table.columns[1].width = Inches(4.3)
+            # Sütun genişliklerini LinkedIn oranına göre ayarla (Sol: 2.0 inç, Sağ: 4.5 inç)
+            table.columns[0].width = Inches(2.0)
+            table.columns[1].width = Inches(4.5)
 
             cell_left = table.cell(0, 0)
             cell_right = table.cell(0, 1)
 
+            # Tablo kenarlıklarını tamamen gizle (görünmez tablo)
+            for cell in (cell_left, cell_right):
+                tcPr = cell._tc.get_or_add_tcPr()
+                tcBorders = docx.oxml.OxmlElement('w:tcBorders')
+                for border_name in ['top', 'left', 'bottom', 'right', 'insideH', 'insideV']:
+                    border = docx.oxml.OxmlElement(f'w:{border_name}')
+                    border.set(docx.oxml.ns.qn('w:val'), 'none')
+                    tcBorders.append(border)
+                tcPr.append(tcBorders)
+
             # Sol sütun içeriklerini ekle
             for _, text in left_column_texts:
                 p = cell_left.add_paragraph()
-                p.paragraph_format.space_after = Pt(4)
+                p.paragraph_format.space_after = Pt(3)
                 p.paragraph_format.line_spacing = 1.15
                 run = p.add_run(text)
                 run.font.name = "Arial"
-                run.font.size = Pt(9.5)
+                run.font.size = Pt(9)
 
             # Sağ sütun içeriklerini ekle
             for _, text in right_column_texts:
@@ -130,7 +139,7 @@ def pdf_to_word(src_pdf: Path, dst_docx: Path) -> None:
                 p.paragraph_format.line_spacing = 1.15
                 run = p.add_run(text)
                 run.font.name = "Arial"
-                run.font.size = Pt(10)
+                run.font.size = Pt(9.5)
 
         word_doc.save(str(dst_docx))
         doc.close()
