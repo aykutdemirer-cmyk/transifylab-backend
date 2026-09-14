@@ -15,6 +15,7 @@ aiofiles>=24.1
 # PDF -> Word (PyMuPDF for coordinate-based parsing + python-docx for grid construction)
 pymupdf>=1.24.0
 # Word/Text -> PDF
+pdf2docx>=0.5.8
 python-docx>=1.1
 reportlab>=4.2
 
