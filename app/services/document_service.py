@@ -1,6 +1,6 @@
 """Document conversion.
 
-Heavy/optional dependencies (``pdf2docx``, ``python-docx``) are imported inside
+Heavy/optional dependencies (``fitz`` / PyMuPDF, ``python-docx``) are imported inside
 the functions that need them so the API still boots when they are absent; a
 missing dependency surfaces as a 503 via :class:`FeatureUnavailableError`.
 """
@@ -24,21 +24,118 @@ class ConversionError(RuntimeError):
 
 
 def pdf_to_word(src_pdf: Path, dst_docx: Path) -> None:
+    """Convert PDF to Word preserving multi-column layout and embedded images (PyMuPDF + python-docx)."""
     try:
-        from pdf2docx import Converter  # type: ignore
-    except ImportError as exc:  # pragma: no cover - depends on env
+        import fitz  # PyMuPDF
+        import docx
+        from docx.shared import Inches, Pt, RGBColor
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.enum.table import WD_TABLE_ALIGNMENT
+    except ImportError as exc:
         raise FeatureUnavailableError(
-            "pdf2docx is not installed. Run: pip install pdf2docx"
+            "Required dependencies (PyMuPDF / python-docx) are not installed. Run: pip install PyMuPDF python-docx"
         ) from exc
 
     try:
-        cv = Converter(str(src_pdf))
-        try:
-            # Whole document; pdf2docx preserves layout and reconstructs tables.
-            cv.convert(str(dst_docx), start=0, end=None)
-        finally:
-            cv.close()
-    except Exception as exc:  # noqa: BLE001 - pdf2docx raises broad errors
+        doc = fitz.open(str(src_pdf))
+        word_doc = docx.Document()
+
+        # Sayfa kenar boşluklarını daraltarak tam sayfa kullanım alanı sağlıyoruz
+        for section in word_doc.sections:
+            section.top_margin = Inches(0.75)
+            section.bottom_margin = Inches(0.75)
+            section.left_margin = Inches(0.75)
+            section.right_margin = Inches(0.75)
+
+        for page_index, page in enumerate(doc):
+            if page_index > 0:
+                word_doc.add_page_break()
+
+            # 1. Görselleri Çıkart ve Kaydet
+            image_list = page.get_images(full=True)
+            for img_index, img in enumerate(image_list):
+                xref = img[0]
+                base_image = doc.extract_image(xref)
+                image_bytes = base_image["image"]
+                image_ext = base_image["ext"]
+                
+                image_path = src_pdf.parent / f"extracted_img_{page_index}_{img_index}.{image_ext}"
+                image_path.write_bytes(image_bytes)
+
+                try:
+                    # Fotoğrafı Word belgesine ekle
+                    word_doc.add_picture(str(image_path), width=Inches(1.2))
+                except Exception:
+                    pass
+                finally:
+                    if image_path.exists():
+                        image_path.unlink(missing_ok=True)
+
+            # 2. Metin Bloklarını Koordinatlarına Göre Al (x0, y0, x1, y1, text, block_no, block_type)
+            blocks = page.get_text("blocks")
+            # Sadece metin içeren blokları filtrele (tip 0: metin, 1: görsel)
+            text_blocks = [b for b in blocks if b[6] == 0]
+
+            if not text_blocks:
+                continue
+
+            # Sayfa genişliğine göre sol ve sağ sütunları ayırmak için eşik (ortalama X koordinatı)
+            page_width = page.rect.width
+            mid_x = page_width / 2
+
+            left_column_texts = []
+            right_column_texts = []
+
+            for b in text_blocks:
+                x0, y0, x1, y1, text, block_no, block_type = b
+                cleaned_text = text.strip()
+                if not cleaned_text:
+                    continue
+                
+                # Eğer blok sayfanın sol yarısındaysa sol sütuna, sağ yarısındaysa sağ sütuna ata
+                if x0 < mid_x - 20:  # Küçük bir tolerans payı
+                    left_column_texts.append((y0, cleaned_text))
+                else:
+                    right_column_texts.append((y0, cleaned_text))
+
+            # Dikey sıraya (y0 koordinatına) göre yukarıdan aşağıya sırala
+            left_column_texts.sort(key=lambda x: x[0])
+            right_column_texts.sort(key=lambda x: x[0])
+
+            # 3. İki Sütunlu Yapıyı Korumak İçin Görünmez Tablo (Grid) Oluştur
+            table = word_doc.add_table(rows=1, cols=2)
+            table.alignment = WD_TABLE_ALIGNMENT.CENTER
+            table.autofit = False
+
+            # Sütun genişliklerini ayarla (Sol: 2.2 inç, Sağ: 4.3 inç)
+            table.columns[0].width = Inches(2.2)
+            table.columns[1].width = Inches(4.3)
+
+            cell_left = table.cell(0, 0)
+            cell_right = table.cell(0, 1)
+
+            # Sol sütun içeriklerini ekle
+            for _, text in left_column_texts:
+                p = cell_left.add_paragraph()
+                p.paragraph_format.space_after = Pt(4)
+                p.paragraph_format.line_spacing = 1.15
+                run = p.add_run(text)
+                run.font.name = "Arial"
+                run.font.size = Pt(9.5)
+
+            # Sağ sütun içeriklerini ekle
+            for _, text in right_column_texts:
+                p = cell_right.add_paragraph()
+                p.paragraph_format.space_after = Pt(4)
+                p.paragraph_format.line_spacing = 1.15
+                run = p.add_run(text)
+                run.font.name = "Arial"
+                run.font.size = Pt(10)
+
+        word_doc.save(str(dst_docx))
+        doc.close()
+
+    except Exception as exc:
         raise ConversionError(f"PDF to Word conversion failed: {exc}") from exc
 
     if not dst_docx.exists() or dst_docx.stat().st_size == 0:
@@ -57,20 +154,17 @@ def docx_to_pdf(src_docx: Path, dst_pdf: Path, title: str | None = None) -> None
 
     try:
         import docx  # type: ignore  (python-docx)
-    except ImportError as exc:  # pragma: no cover - depends on env
+    except ImportError as exc:
         raise FeatureUnavailableError(
             "python-docx is not installed. Run: pip install python-docx"
         ) from exc
 
     try:
         document = docx.Document(str(src_docx))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise ConversionError(f"Could not read .docx: {exc}") from exc
 
     paragraphs = [p.text for p in document.paragraphs]
-    # `title` is the caller's real (uploaded) file name; `src_docx` is only the
-    # temp path we saved the upload to (e.g. "input.docx") and must never be
-    # shown to the user as a heading.
     _render_pdf(paragraphs, dst_pdf, title=title)
 
 
@@ -78,23 +172,20 @@ def docx_to_pdf(src_docx: Path, dst_pdf: Path, title: str | None = None) -> None
 # internals
 # --------------------------------------------------------------------------
 def _wrap_plaintext(text: str) -> list[str]:
-    # Preserve blank lines; reportlab Paragraph handles the rest.
     return text.replace("\r\n", "\n").split("\n")
 
 
 def _render_pdf(lines: list[str], dst_pdf: Path, *, title: str | None) -> None:
     try:
         from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate, Spacer
-    except ImportError as exc:  # pragma: no cover - depends on env
+    except ImportError as exc:
         raise FeatureUnavailableError(
             "reportlab is not installed. Run: pip install reportlab"
         ) from exc
 
     from datetime import datetime
     from xml.sax.saxutils import escape
-
     from reportlab.lib.units import mm
-
     from app.services import pdf_theme as theme
 
     story: list = []
@@ -131,7 +222,7 @@ def _render_pdf(lines: list[str], dst_pdf: Path, *, title: str | None) -> None:
             bottomMargin=theme.MARGIN_BOTTOM,
             title=title or dst_pdf.stem,
         ).build(story, onFirstPage=theme.decorate_page, onLaterPages=theme.decorate_page)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise ConversionError(f"PDF rendering failed: {exc}") from exc
 
     if not dst_pdf.exists() or dst_pdf.stat().st_size == 0:
