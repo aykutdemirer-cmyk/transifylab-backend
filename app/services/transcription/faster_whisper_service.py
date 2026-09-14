@@ -39,8 +39,13 @@ class FasterWhisperService(TranscriptionService):
             "loading faster-whisper model=%s device=%s compute=%s",
             s.fw_model_size, s.fw_device, s.fw_compute_type,
         )
+        # Render ücretsiz planın 512 MB RAM sınırını korumak için cpu_threads ve num_workers sınırlandı
         self._model = WhisperModel(
-            s.fw_model_size, device=s.fw_device, compute_type=s.fw_compute_type
+            s.fw_model_size,
+            device=s.fw_device,
+            compute_type=s.fw_compute_type,
+            cpu_threads=2,
+            num_workers=1,
         )
         return self._model
 
