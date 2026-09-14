@@ -24,12 +24,11 @@ class ConversionError(RuntimeError):
 
 
 def pdf_to_word(src_pdf: Path, dst_docx: Path) -> None:
-    """Convert PDF to Word preserving multi-column layout and embedded images (PyMuPDF + python-docx)."""
+    """Convert PDF to Word preserving layout and all text/image blocks (PyMuPDF + python-docx)."""
     try:
         import pymupdf as fitz
         import docx
-        from docx.shared import Inches, Pt, RGBColor
-        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.shared import Inches, Pt
         from docx.enum.table import WD_TABLE_ALIGNMENT
     except ImportError as exc:
         raise FeatureUnavailableError(
@@ -40,7 +39,7 @@ def pdf_to_word(src_pdf: Path, dst_docx: Path) -> None:
         doc = fitz.open(str(src_pdf))
         word_doc = docx.Document()
 
-        # Sayfa kenar boşluklarını daraltarak tam sayfa kullanım alanı sağlıyoruz
+        # Sayfa kenar boşluklarını standart dar ayara getiriyoruz
         for section in word_doc.sections:
             section.top_margin = Inches(0.75)
             section.bottom_margin = Inches(0.75)
@@ -51,7 +50,7 @@ def pdf_to_word(src_pdf: Path, dst_docx: Path) -> None:
             if page_index > 0:
                 word_doc.add_page_break()
 
-            # 1. Görselleri Çıkart ve Kaydet
+            # 1. Görselleri Çıkart ve Belgeye Ekle
             image_list = page.get_images(full=True)
             for img_index, img in enumerate(image_list):
                 xref = img[0]
@@ -63,83 +62,40 @@ def pdf_to_word(src_pdf: Path, dst_docx: Path) -> None:
                 image_path.write_bytes(image_bytes)
 
                 try:
-                    # Fotoğrafı Word belgesine ekle
-                    word_doc.add_picture(str(image_path), width=Inches(1.2))
+                    word_doc.add_picture(str(image_path), width=Inches(1.5))
                 except Exception:
                     pass
                 finally:
                     if image_path.exists():
                         image_path.unlink(missing_ok=True)
 
-            # 2. Metin Bloklarını Koordinatlarına Göre Al (x0, y0, x1, y1, text, block_no, block_type)
+            # 2. Tüm Metin Bloklarını Al ve Eksiksiz Dikey Sıralamaya Sok
             blocks = page.get_text("blocks")
-            # Sadece metin içeren blokları filtrele (tip 0: metin, 1: görsel)
+            # Tip 0: Metin blokları (Hiçbir metni elemiyoruz, tamamını alıyoruz)
             text_blocks = [b for b in blocks if b[6] == 0]
 
             if not text_blocks:
                 continue
 
-            # Sayfa genişliğine göre sol ve sağ sütun sınırını ayarla (LinkedIn için sol taraf daha dardır)
-            page_width = page.rect.width
-            split_x = page_width * 0.32  # İlk %32'lik kısım sol sütun (iletişim, yetenekler)
-
-            left_column_texts = []
-            right_column_texts = []
-
+            # (y0, x0, text) tuple yapısıyla önce dikey (y0), aynı hizada ise yatay (x0) sıraya diziyoruz
+            formatted_blocks = []
             for b in text_blocks:
                 x0, y0, x1, y1, text, block_no, block_type = b
                 cleaned_text = text.strip()
-                if not cleaned_text:
-                    continue
-                
-                if x0 < split_x:
-                    left_column_texts.append((y0, cleaned_text))
-                else:
-                    right_column_texts.append((y0, cleaned_text))
+                if cleaned_text:
+                    formatted_blocks.append((y0, x0, cleaned_text))
 
-            # Dikey sıraya göre sırala
-            left_column_texts.sort(key=lambda x: x[0])
-            right_column_texts.sort(key=lambda x: x[0])
+            # Yukarıdan aşağıya, soldan sağa kusursuz akış sıralaması
+            formatted_blocks.sort(key=lambda item: (item[0], item[1]))
 
-            # 3. İki Sütunlu Yapı İçin Tablo Oluştur ve Kenar Çizgilerini Kaldır
-            table = word_doc.add_table(rows=1, cols=2)
-            table.alignment = WD_TABLE_ALIGNMENT.CENTER
-            table.autofit = False
-
-            # Sütun genişliklerini LinkedIn oranına göre ayarla (Sol: 2.0 inç, Sağ: 4.5 inç)
-            table.columns[0].width = Inches(2.0)
-            table.columns[1].width = Inches(4.5)
-
-            cell_left = table.cell(0, 0)
-            cell_right = table.cell(0, 1)
-
-            # Tablo kenarlıklarını tamamen gizle (görünmez tablo)
-            for cell in (cell_left, cell_right):
-                tcPr = cell._tc.get_or_add_tcPr()
-                tcBorders = docx.oxml.OxmlElement('w:tcBorders')
-                for border_name in ['top', 'left', 'bottom', 'right', 'insideH', 'insideV']:
-                    border = docx.oxml.OxmlElement(f'w:{border_name}')
-                    border.set(docx.oxml.ns.qn('w:val'), 'none')
-                    tcBorders.append(border)
-                tcPr.append(tcBorders)
-
-            # Sol sütun içeriklerini ekle
-            for _, text in left_column_texts:
-                p = cell_left.add_paragraph()
-                p.paragraph_format.space_after = Pt(3)
-                p.paragraph_format.line_spacing = 1.15
-                run = p.add_run(text)
-                run.font.name = "Arial"
-                run.font.size = Pt(9)
-
-            # Sağ sütun içeriklerini ekle
-            for _, text in right_column_texts:
-                p = cell_right.add_paragraph()
+            # 3. İçerikleri eksiksiz olarak Word sayfasına ekle
+            for _, _, text in formatted_blocks:
+                p = word_doc.add_paragraph()
                 p.paragraph_format.space_after = Pt(4)
                 p.paragraph_format.line_spacing = 1.15
                 run = p.add_run(text)
                 run.font.name = "Arial"
-                run.font.size = Pt(9.5)
+                run.font.size = Pt(10)
 
         word_doc.save(str(dst_docx))
         doc.close()
